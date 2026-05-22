@@ -1,15 +1,57 @@
+/**
+ * 知识点：/api/knowledge
+ */
 const express = require('express');
-const pool = require('../db/pool');
-const { dbErrorMessage } = require('../db/error');
+const fs = require('fs');
+const path = require('path');
+const multer = require('multer');
+const pool = require('../../db/pool');
+const { dbErrorMessage } = require('../../db/error');
+const { success, fail, parseId } = require('../utils/response');
 
 const router = express.Router();
 
-const success = (data, message = 'success') => ({ code: 200, message, data });
-const fail = (message, code = 400) => ({ code, message });
+const uploadDir = path.join(__dirname, '../../uploads/knowledge');
+fs.mkdirSync(uploadDir, { recursive: true });
 
-const parseId = (value) => {
-  const id = parseInt(value, 10);
-  return Number.isInteger(id) && id > 0 ? id : null;
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, uploadDir),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.png';
+    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (/^image\//.test(file.mimetype)) cb(null, true);
+    else cb(new Error('仅支持图片文件'));
+  },
+});
+
+const mapImages = (images) => {
+  if (!images) return [];
+  if (Array.isArray(images)) return images;
+  if (typeof images === 'string') {
+    try {
+      return JSON.parse(images);
+    } catch {
+      return [];
+    }
+  }
+  return [];
+};
+
+const mapPoint = (row) => {
+  if (!row) return row;
+  return { ...row, images: mapImages(row.images) };
+};
+
+const serializeImages = (images) => {
+  if (!images || !images.length) return null;
+  return JSON.stringify(images);
 };
 
 const buildCategoryTree = (rows, parentId = 0) =>
@@ -18,18 +60,75 @@ const buildCategoryTree = (rows, parentId = 0) =>
     .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)
     .map((row) => ({
       ...row,
+      color: row.color || '#722ed1',
       children: buildCategoryTree(rows, row.id),
     }));
 
-// ---------- 分类 ----------
+// 看板：顶级分类 + 知识点卡片
+router.get('/board', async (req, res) => {
+  const { keyword } = req.query;
+
+  try {
+    const [categories] = await pool.query(
+      `SELECT id, parent_id, name, description, color, sort_order, status, created_at, updated_at
+       FROM knowledge_category
+       WHERE parent_id = 0 AND status = 1
+       ORDER BY sort_order ASC, id ASC`
+    );
+
+    const conditions = [];
+    const params = [];
+    if (keyword) {
+      conditions.push('(title LIKE ? OR summary LIKE ? OR content LIKE ? OR tags LIKE ?)');
+      const kw = `%${keyword}%`;
+      params.push(kw, kw, kw, kw);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const [points] = await pool.query(
+      `SELECT id, category_id, title, summary, cover_image, images, tags, sort_order, status, created_at, updated_at
+       FROM knowledge_point ${where}
+       ORDER BY sort_order ASC, id DESC`,
+      params
+    );
+
+    const mappedPoints = points.map(mapPoint);
+    let board = categories.map((cat) => ({
+      ...cat,
+      color: cat.color || '#722ed1',
+      points: mappedPoints.filter((p) => p.category_id === cat.id),
+    }));
+
+    if (keyword) {
+      board = board.filter((col) => col.points.length > 0);
+    }
+
+    res.json(success(board));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json(fail(dbErrorMessage(err), 500));
+  }
+});
+
+router.post('/upload', (req, res) => {
+  upload.single('file')(req, res, (err) => {
+    if (err) {
+      return res.status(400).json(fail(err.message || '上传失败'));
+    }
+    if (!req.file) {
+      return res.status(400).json(fail('请选择图片'));
+    }
+    res.json(success({ url: `/uploads/knowledge/${req.file.filename}` }));
+  });
+});
 
 router.get('/categories', async (req, res) => {
   const { tree } = req.query;
   try {
     const [rows] = await pool.query(
-      'SELECT id, parent_id, name, description, sort_order, status, created_at, updated_at FROM knowledge_category ORDER BY sort_order ASC, id ASC'
+      'SELECT id, parent_id, name, description, color, sort_order, status, created_at, updated_at FROM knowledge_category ORDER BY sort_order ASC, id ASC'
     );
-    const data = tree === '1' || tree === 'true' ? buildCategoryTree(rows) : rows;
+    const data = tree === '1' || tree === 'true' ? buildCategoryTree(rows) : rows.map((r) => ({ ...r, color: r.color || '#722ed1' }));
     res.json(success(data));
   } catch (err) {
     console.error(err);
@@ -43,11 +142,11 @@ router.get('/categories/:id', async (req, res) => {
 
   try {
     const [rows] = await pool.query(
-      'SELECT id, parent_id, name, description, sort_order, status, created_at, updated_at FROM knowledge_category WHERE id = ?',
+      'SELECT id, parent_id, name, description, color, sort_order, status, created_at, updated_at FROM knowledge_category WHERE id = ?',
       [id]
     );
     if (!rows.length) return res.status(404).json(fail('分类不存在', 404));
-    res.json(success(rows[0]));
+    res.json(success({ ...rows[0], color: rows[0].color || '#722ed1' }));
   } catch (err) {
     console.error(err);
     res.status(500).json(fail(dbErrorMessage(err), 500));
@@ -55,7 +154,7 @@ router.get('/categories/:id', async (req, res) => {
 });
 
 router.post('/categories', async (req, res) => {
-  const { parent_id = 0, name, description = null, sort_order = 0, status = 1 } = req.body;
+  const { parent_id = 0, name, description = null, color = '#722ed1', sort_order = 0, status = 1 } = req.body;
   if (!name || !String(name).trim()) {
     return res.status(400).json(fail('分类名称不能为空'));
   }
@@ -67,8 +166,8 @@ router.post('/categories', async (req, res) => {
     }
 
     const [result] = await pool.query(
-      'INSERT INTO knowledge_category (parent_id, name, description, sort_order, status) VALUES (?, ?, ?, ?, ?)',
-      [parent_id, String(name).trim(), description, sort_order, status]
+      'INSERT INTO knowledge_category (parent_id, name, description, color, sort_order, status) VALUES (?, ?, ?, ?, ?, ?)',
+      [parent_id, String(name).trim(), description, color, sort_order, status]
     );
     const [rows] = await pool.query('SELECT * FROM knowledge_category WHERE id = ?', [result.insertId]);
     res.status(201).json(success(rows[0], '创建成功'));
@@ -82,7 +181,7 @@ router.put('/categories/:id', async (req, res) => {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json(fail('无效的分类 ID'));
 
-  const { parent_id, name, description, sort_order, status } = req.body;
+  const { parent_id, name, description, color, sort_order, status } = req.body;
   const fields = [];
   const values = [];
 
@@ -98,6 +197,10 @@ router.put('/categories/:id', async (req, res) => {
   if (description !== undefined) {
     fields.push('description = ?');
     values.push(description);
+  }
+  if (color !== undefined) {
+    fields.push('color = ?');
+    values.push(color);
   }
   if (sort_order !== undefined) {
     fields.push('sort_order = ?');
@@ -154,17 +257,8 @@ router.delete('/categories/:id', async (req, res) => {
   }
 });
 
-// ---------- 知识点 ----------
-
 router.get('/points', async (req, res) => {
-  const {
-    categoryId,
-    keyword,
-    status,
-    page = '1',
-    pageSize = '10',
-  } = req.query;
-
+  const { categoryId, keyword, status, page = '1', pageSize = '10' } = req.query;
   const pageNum = Math.max(parseInt(page, 10) || 1, 1);
   const size = Math.min(Math.max(parseInt(pageSize, 10) || 10, 1), 100);
   const offset = (pageNum - 1) * size;
@@ -194,7 +288,7 @@ router.get('/points', async (req, res) => {
       params
     );
     const [rows] = await pool.query(
-      `SELECT p.id, p.category_id, c.name AS category_name, p.title, p.summary,
+      `SELECT p.id, p.category_id, c.name AS category_name, p.title, p.summary, p.cover_image, p.images,
               p.tags, p.sort_order, p.status, p.created_at, p.updated_at
        FROM knowledge_point p
        LEFT JOIN knowledge_category c ON c.id = p.category_id
@@ -205,7 +299,7 @@ router.get('/points', async (req, res) => {
     );
 
     res.json(success({
-      list: rows,
+      list: rows.map(mapPoint),
       total: countRows[0].total,
       page: pageNum,
       pageSize: size,
@@ -229,7 +323,7 @@ router.get('/points/:id', async (req, res) => {
       [id]
     );
     if (!rows.length) return res.status(404).json(fail('知识点不存在', 404));
-    res.json(success(rows[0]));
+    res.json(success(mapPoint(rows[0])));
   } catch (err) {
     console.error(err);
     res.status(500).json(fail(dbErrorMessage(err), 500));
@@ -242,6 +336,8 @@ router.post('/points', async (req, res) => {
     title,
     summary = null,
     content = null,
+    cover_image = null,
+    images = [],
     tags = null,
     sort_order = 0,
     status = 1,
@@ -255,12 +351,22 @@ router.post('/points', async (req, res) => {
     if (!cats.length) return res.status(400).json(fail('分类不存在'));
 
     const [result] = await pool.query(
-      `INSERT INTO knowledge_point (category_id, title, summary, content, tags, sort_order, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [category_id, String(title).trim(), summary, content, tags, sort_order, status]
+      `INSERT INTO knowledge_point (category_id, title, summary, content, cover_image, images, tags, sort_order, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        category_id,
+        String(title).trim(),
+        summary,
+        content,
+        cover_image,
+        serializeImages(images),
+        tags,
+        sort_order,
+        status,
+      ]
     );
     const [rows] = await pool.query('SELECT * FROM knowledge_point WHERE id = ?', [result.insertId]);
-    res.status(201).json(success(rows[0], '创建成功'));
+    res.status(201).json(success(mapPoint(rows[0]), '创建成功'));
   } catch (err) {
     console.error(err);
     res.status(500).json(fail(dbErrorMessage(err), 500));
@@ -271,14 +377,17 @@ router.put('/points/:id', async (req, res) => {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json(fail('无效的知识点 ID'));
 
-  const allowed = ['category_id', 'title', 'summary', 'content', 'tags', 'sort_order', 'status'];
+  const allowed = [
+    'category_id', 'title', 'summary', 'content', 'cover_image', 'images',
+    'tags', 'sort_order', 'status',
+  ];
   const fields = [];
   const values = [];
 
   for (const key of allowed) {
     if (req.body[key] !== undefined) {
       fields.push(`${key} = ?`);
-      values.push(req.body[key]);
+      values.push(key === 'images' ? serializeImages(req.body[key]) : req.body[key]);
     }
   }
 
@@ -301,7 +410,7 @@ router.put('/points/:id', async (req, res) => {
     if (!result.affectedRows) return res.status(404).json(fail('知识点不存在', 404));
 
     const [rows] = await pool.query('SELECT * FROM knowledge_point WHERE id = ?', [id]);
-    res.json(success(rows[0], '更新成功'));
+    res.json(success(mapPoint(rows[0]), '更新成功'));
   } catch (err) {
     console.error(err);
     res.status(500).json(fail(dbErrorMessage(err), 500));

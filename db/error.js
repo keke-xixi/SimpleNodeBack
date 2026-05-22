@@ -14,7 +14,7 @@ function dbErrorMessage(err) {
     case 'ER_DBACCESS_DENIED_ERROR':
       return `账号 ${process.env.DB_USER || 'learner'} 无权访问库「${process.env.DB_NAME}」。请在 Navicat 用管理员执行授权，或把 .env 的 DB_NAME 改成你有权限的库名`;
     case 'ER_NO_SUCH_TABLE':
-      return `表不存在，请在 react_model 库执行 sql/knowledge.sql。详情：${err.sqlMessage}`;
+      return `表不存在，请在当前库执行 sql/menu.sql 或 sql/knowledge.sql。详情：${err.sqlMessage}`;
     default:
       break;
   }
