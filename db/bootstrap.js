@@ -1,0 +1,162 @@
+/**
+ * 启动时补全用户体系、数据隔离字段、默认管理员
+ */
+const bcrypt = require('bcryptjs');
+const pool = require('./pool');
+
+async function columnExists(table, column) {
+  const [rows] = await pool.query(`SHOW COLUMNS FROM ${table} LIKE ?`, [column]);
+  return rows.length > 0;
+}
+
+async function ensureUserTables() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS sys_user (
+      id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
+      username      VARCHAR(50) NOT NULL COMMENT '登录名',
+      password_hash VARCHAR(255) NOT NULL,
+      nickname      VARCHAR(50) DEFAULT NULL,
+      status        TINYINT NOT NULL DEFAULT 1 COMMENT '1正常 0停用',
+      is_admin      TINYINT NOT NULL DEFAULT 0 COMMENT '1管理员',
+      created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uk_username (username)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='系统用户'
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS sys_user_menu (
+      user_id INT UNSIGNED NOT NULL,
+      menu_id INT UNSIGNED NOT NULL,
+      PRIMARY KEY (user_id, menu_id),
+      KEY idx_menu_id (menu_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户菜单权限'
+  `);
+}
+
+async function ensureUserIdColumns() {
+  const tables = ['knowledge_category', 'knowledge_point', 'important_note'];
+  for (const table of tables) {
+    if (!(await columnExists(table, 'user_id'))) {
+      await pool.query(`ALTER TABLE ${table} ADD COLUMN user_id INT UNSIGNED NOT NULL DEFAULT 1 AFTER id`);
+      await pool.query(`ALTER TABLE ${table} ADD KEY idx_user_id (user_id)`);
+    }
+  }
+}
+
+async function ensurePrimaryAdmin() {
+  const [rows] = await pool.query('SELECT id FROM sys_user WHERE username = ? LIMIT 1', ['monster']);
+  if (rows.length) return rows[0].id;
+
+  const hash = await bcrypt.hash('monster', 10);
+  const [result] = await pool.query(
+    `INSERT INTO sys_user (username, password_hash, nickname, status, is_admin)
+     VALUES ('monster', ?, '管理员', 1, 1)`,
+    [hash]
+  );
+  console.log('[bootstrap] 已创建管理员 monster / monster');
+  return result.insertId;
+}
+
+async function ensureTestUser() {
+  const [rows] = await pool.query('SELECT id FROM sys_user WHERE username = ? LIMIT 1', ['admin']);
+  if (rows.length) {
+    await pool.query(
+      `UPDATE sys_user SET is_admin = 0, nickname = '测试账号' WHERE username = 'admin' AND (is_admin = 1 OR nickname = '管理员')`
+    );
+    return rows[0].id;
+  }
+
+  const hash = await bcrypt.hash('admin123', 10);
+  const [result] = await pool.query(
+    `INSERT INTO sys_user (username, password_hash, nickname, status, is_admin)
+     VALUES ('admin', ?, '测试账号', 1, 0)`,
+    [hash]
+  );
+  console.log('[bootstrap] 已创建测试账号 admin / admin123');
+  return result.insertId;
+}
+
+async function migrateLegacyDataToAdmin(adminId) {
+  await pool.query('UPDATE knowledge_category SET user_id = ? WHERE user_id IS NULL OR user_id = 0', [adminId]);
+  await pool.query('UPDATE knowledge_point SET user_id = ? WHERE user_id IS NULL OR user_id = 0', [adminId]);
+  await pool.query('UPDATE important_note SET user_id = ? WHERE user_id IS NULL OR user_id = 0', [adminId]);
+}
+
+async function assignMenusToUser(userId, { excludeKeys = [] } = {}) {
+  let sql = 'SELECT id FROM sys_menu WHERE status = 1';
+  const params = [];
+  if (excludeKeys.length) {
+    sql += ` AND menu_key NOT IN (${excludeKeys.map(() => '?').join(',')})`;
+    params.push(...excludeKeys);
+  }
+  const [menus] = await pool.query(sql, params);
+  if (!menus.length) return;
+  await pool.query('DELETE FROM sys_user_menu WHERE user_id = ?', [userId]);
+  const values = menus.map((m) => [userId, m.id]);
+  await pool.query('INSERT IGNORE INTO sys_user_menu (user_id, menu_id) VALUES ?', [values]);
+}
+
+async function ensureUserMenuItem() {
+  const [rows] = await pool.query("SELECT id FROM sys_menu WHERE menu_key = 'system-users' LIMIT 1");
+  if (rows.length) return;
+
+  const [systemRows] = await pool.query("SELECT id FROM sys_menu WHERE menu_key = 'system' LIMIT 1");
+  const parentId = systemRows[0]?.id || 0;
+  const level = parentId ? 2 : 1;
+
+  await pool.query(
+    `INSERT INTO sys_menu (parent_id, level, type, label, menu_key, path, sort_order, status)
+     VALUES (?, ?, 2, '用户管理', 'system-users', '/system/users', 4, 1)`,
+    [parentId, level]
+  );
+  console.log('[bootstrap] 已添加菜单：用户管理');
+}
+
+async function ensureImportantNoteTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS important_note (
+      id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
+      user_id     INT UNSIGNED NOT NULL DEFAULT 1,
+      title       VARCHAR(200) NOT NULL,
+      summary     VARCHAR(500) DEFAULT NULL,
+      content     MEDIUMTEXT,
+      category    VARCHAR(50) DEFAULT NULL,
+      color       VARCHAR(20) DEFAULT '#4f46e5',
+      is_pinned   TINYINT NOT NULL DEFAULT 0,
+      sort_order  INT NOT NULL DEFAULT 0,
+      created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_user_pinned (user_id, is_pinned, updated_at),
+      KEY idx_category (category)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='重要笔记'
+  `);
+}
+
+async function ensureNoteMenu() {
+  const [rows] = await pool.query("SELECT id FROM sys_menu WHERE menu_key = 'note' LIMIT 1");
+  if (rows.length) return false;
+  await pool.query(
+    `INSERT INTO sys_menu (parent_id, level, type, label, menu_key, path, sort_order, status)
+     VALUES (0, 1, 2, '重要笔记', 'note', '/note', 35, 1)`
+  );
+  return true;
+}
+
+async function runBootstrap() {
+  await ensureUserTables();
+  await ensureImportantNoteTable();
+  await ensureUserIdColumns();
+  const primaryAdminId = await ensurePrimaryAdmin();
+  const testUserId = await ensureTestUser();
+  await migrateLegacyDataToAdmin(primaryAdminId);
+  await ensureUserMenuItem();
+  const noteMenuAdded = await ensureNoteMenu();
+  await assignMenusToUser(primaryAdminId);
+  await assignMenusToUser(testUserId, { excludeKeys: ['system-users'] });
+  if (noteMenuAdded) console.log('[bootstrap] 已添加侧边栏菜单：重要笔记');
+}
+
+module.exports = { runBootstrap };

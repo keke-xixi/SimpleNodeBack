@@ -10,6 +10,7 @@ const { dbErrorMessage } = require('../../db/error');
 const { success, fail, parseId } = require('../utils/response');
 
 const router = express.Router();
+const uid = (req) => req.user.id;
 
 const uploadDir = path.join(__dirname, '../../uploads/knowledge');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -72,12 +73,13 @@ router.get('/board', async (req, res) => {
     const [categories] = await pool.query(
       `SELECT id, parent_id, name, description, color, sort_order, status, created_at, updated_at
        FROM knowledge_category
-       WHERE parent_id = 0 AND status = 1
-       ORDER BY sort_order ASC, id ASC`
+       WHERE parent_id = 0 AND status = 1 AND user_id = ?
+       ORDER BY sort_order ASC, id ASC`,
+      [uid(req)]
     );
 
-    const conditions = [];
-    const params = [];
+    const conditions = ['user_id = ?'];
+    const params = [uid(req)];
     if (keyword) {
       conditions.push('(title LIKE ? OR summary LIKE ? OR content LIKE ? OR tags LIKE ?)');
       const kw = `%${keyword}%`;
@@ -126,7 +128,8 @@ router.get('/categories', async (req, res) => {
   const { tree } = req.query;
   try {
     const [rows] = await pool.query(
-      'SELECT id, parent_id, name, description, color, sort_order, status, created_at, updated_at FROM knowledge_category ORDER BY sort_order ASC, id ASC'
+      'SELECT id, parent_id, name, description, color, sort_order, status, created_at, updated_at FROM knowledge_category WHERE user_id = ? ORDER BY sort_order ASC, id ASC',
+      [uid(req)]
     );
     const data = tree === '1' || tree === 'true' ? buildCategoryTree(rows) : rows.map((r) => ({ ...r, color: r.color || '#722ed1' }));
     res.json(success(data));
@@ -142,8 +145,8 @@ router.get('/categories/:id', async (req, res) => {
 
   try {
     const [rows] = await pool.query(
-      'SELECT id, parent_id, name, description, color, sort_order, status, created_at, updated_at FROM knowledge_category WHERE id = ?',
-      [id]
+      'SELECT id, parent_id, name, description, color, sort_order, status, created_at, updated_at FROM knowledge_category WHERE id = ? AND user_id = ?',
+      [id, uid(req)]
     );
     if (!rows.length) return res.status(404).json(fail('分类不存在', 404));
     res.json(success({ ...rows[0], color: rows[0].color || '#722ed1' }));
@@ -161,13 +164,13 @@ router.post('/categories', async (req, res) => {
 
   try {
     if (parent_id) {
-      const [parents] = await pool.query('SELECT id FROM knowledge_category WHERE id = ?', [parent_id]);
+      const [parents] = await pool.query('SELECT id FROM knowledge_category WHERE id = ? AND user_id = ?', [parent_id, uid(req)]);
       if (!parents.length) return res.status(400).json(fail('父分类不存在'));
     }
 
     const [result] = await pool.query(
-      'INSERT INTO knowledge_category (parent_id, name, description, color, sort_order, status) VALUES (?, ?, ?, ?, ?, ?)',
-      [parent_id, String(name).trim(), description, color, sort_order, status]
+      'INSERT INTO knowledge_category (user_id, parent_id, name, description, color, sort_order, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [uid(req), parent_id, String(name).trim(), description, color, sort_order, status]
     );
     const [rows] = await pool.query('SELECT * FROM knowledge_category WHERE id = ?', [result.insertId]);
     res.status(201).json(success(rows[0], '创建成功'));
@@ -218,13 +221,13 @@ router.put('/categories/:id', async (req, res) => {
       return res.status(400).json(fail('父分类不能是自己'));
     }
     if (parent_id) {
-      const [parents] = await pool.query('SELECT id FROM knowledge_category WHERE id = ?', [parent_id]);
+      const [parents] = await pool.query('SELECT id FROM knowledge_category WHERE id = ? AND user_id = ?', [parent_id, uid(req)]);
       if (!parents.length) return res.status(400).json(fail('父分类不存在'));
     }
 
-    values.push(id);
+    values.push(id, uid(req));
     const [result] = await pool.query(
-      `UPDATE knowledge_category SET ${fields.join(', ')} WHERE id = ?`,
+      `UPDATE knowledge_category SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`,
       values
     );
     if (!result.affectedRows) return res.status(404).json(fail('分类不存在', 404));
@@ -242,13 +245,13 @@ router.delete('/categories/:id', async (req, res) => {
   if (!id) return res.status(400).json(fail('无效的分类 ID'));
 
   try {
-    const [children] = await pool.query('SELECT id FROM knowledge_category WHERE parent_id = ? LIMIT 1', [id]);
+    const [children] = await pool.query('SELECT id FROM knowledge_category WHERE parent_id = ? AND user_id = ? LIMIT 1', [id, uid(req)]);
     if (children.length) return res.status(400).json(fail('请先删除或移动子分类'));
 
-    const [points] = await pool.query('SELECT id FROM knowledge_point WHERE category_id = ? LIMIT 1', [id]);
+    const [points] = await pool.query('SELECT id FROM knowledge_point WHERE category_id = ? AND user_id = ? LIMIT 1', [id, uid(req)]);
     if (points.length) return res.status(400).json(fail('该分类下还有知识点，无法删除'));
 
-    const [result] = await pool.query('DELETE FROM knowledge_category WHERE id = ?', [id]);
+    const [result] = await pool.query('DELETE FROM knowledge_category WHERE id = ? AND user_id = ?', [id, uid(req)]);
     if (!result.affectedRows) return res.status(404).json(fail('分类不存在', 404));
     res.json(success(null, '删除成功'));
   } catch (err) {
@@ -263,8 +266,8 @@ router.get('/points', async (req, res) => {
   const size = Math.min(Math.max(parseInt(pageSize, 10) || 10, 1), 100);
   const offset = (pageNum - 1) * size;
 
-  const conditions = [];
-  const params = [];
+  const conditions = ['p.user_id = ?'];
+  const params = [uid(req)];
 
   if (categoryId) {
     conditions.push('p.category_id = ?');
@@ -319,8 +322,8 @@ router.get('/points/:id', async (req, res) => {
       `SELECT p.*, c.name AS category_name
        FROM knowledge_point p
        LEFT JOIN knowledge_category c ON c.id = p.category_id
-       WHERE p.id = ?`,
-      [id]
+       WHERE p.id = ? AND p.user_id = ?`,
+      [id, uid(req)]
     );
     if (!rows.length) return res.status(404).json(fail('知识点不存在', 404));
     res.json(success(mapPoint(rows[0])));
@@ -347,13 +350,14 @@ router.post('/points', async (req, res) => {
   if (!title || !String(title).trim()) return res.status(400).json(fail('标题不能为空'));
 
   try {
-    const [cats] = await pool.query('SELECT id FROM knowledge_category WHERE id = ?', [category_id]);
+    const [cats] = await pool.query('SELECT id FROM knowledge_category WHERE id = ? AND user_id = ?', [category_id, uid(req)]);
     if (!cats.length) return res.status(400).json(fail('分类不存在'));
 
     const [result] = await pool.query(
-      `INSERT INTO knowledge_point (category_id, title, summary, content, cover_image, images, tags, sort_order, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO knowledge_point (user_id, category_id, title, summary, content, cover_image, images, tags, sort_order, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        uid(req),
         category_id,
         String(title).trim(),
         summary,
@@ -398,13 +402,13 @@ router.put('/points/:id', async (req, res) => {
 
   try {
     if (req.body.category_id !== undefined) {
-      const [cats] = await pool.query('SELECT id FROM knowledge_category WHERE id = ?', [req.body.category_id]);
+      const [cats] = await pool.query('SELECT id FROM knowledge_category WHERE id = ? AND user_id = ?', [req.body.category_id, uid(req)]);
       if (!cats.length) return res.status(400).json(fail('分类不存在'));
     }
 
-    values.push(id);
+    values.push(id, uid(req));
     const [result] = await pool.query(
-      `UPDATE knowledge_point SET ${fields.join(', ')} WHERE id = ?`,
+      `UPDATE knowledge_point SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`,
       values
     );
     if (!result.affectedRows) return res.status(404).json(fail('知识点不存在', 404));
@@ -422,7 +426,7 @@ router.delete('/points/:id', async (req, res) => {
   if (!id) return res.status(400).json(fail('无效的知识点 ID'));
 
   try {
-    const [result] = await pool.query('DELETE FROM knowledge_point WHERE id = ?', [id]);
+    const [result] = await pool.query('DELETE FROM knowledge_point WHERE id = ? AND user_id = ?', [id, uid(req)]);
     if (!result.affectedRows) return res.status(404).json(fail('知识点不存在', 404));
     res.json(success(null, '删除成功'));
   } catch (err) {

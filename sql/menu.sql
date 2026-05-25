@@ -28,6 +28,7 @@ INSERT INTO sys_menu (id, parent_id, level, type, label, menu_key, path, sort_or
 (1,  0, 1, 2, '首页',     'home',          '/home',          1, NULL, NULL),
 (2,  0, 1, 2, '报表',     'report',        '/report',        2, NULL, NULL),
 (3,  0, 1, 2, '知识点',   'knowledge',     '/knowledge',     3, NULL, NULL),
-(4,  0, 1, 1, '系统设置', 'system',        NULL,             4, NULL, NULL),
+(7,  0, 1, 2, '重要笔记', 'note',          '/note',          4, NULL, NULL),
+(4,  0, 1, 1, '系统设置', 'system',        NULL,             5, NULL, NULL),
 (5,  4, 2, 2, '系统参数', 'system-params', '/system/params', 1, NULL, NULL),
-(6,  0, 1, 2, '工具',     'tool',          '/tool',          5, NULL, NULL);
+(6,  0, 1, 2, '工具',     'tool',          '/tool',          6, NULL, NULL);

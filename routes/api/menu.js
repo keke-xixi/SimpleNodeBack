@@ -5,6 +5,7 @@ const express = require('express');
 const pool = require('../../db/pool');
 const { dbErrorMessage } = require('../../db/error');
 const { success, fail, parseId } = require('../utils/response');
+const { getMenusForUser } = require('../utils/menuAccess');
 
 const router = express.Router();
 
@@ -150,13 +151,7 @@ router.get('/', async (req, res) => {
   const { menuName } = req.query;
 
   try {
-    const [rows] = await pool.query(
-      `SELECT id, parent_id, level, type, label, menu_key, path, icon,
-              sort_order, reserved1, reserved2
-       FROM sys_menu
-       WHERE status = 1
-       ORDER BY sort_order ASC, id ASC`
-    );
+    const rows = await getMenusForUser(req.user);
 
     let roots = rows.filter((row) => row.parent_id === 0);
     if (menuName) {

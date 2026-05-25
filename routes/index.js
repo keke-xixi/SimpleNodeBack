@@ -9,10 +9,13 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { authRequired } = require('../middleware/auth');
 
 const devMounts = {
   db: '/api/db',
 };
+
+const PUBLIC_API_PATHS = ['/auth/login'];
 
 function mount(app, mountPath, router) {
   app.use(mountPath, router);
@@ -48,6 +51,10 @@ function loadDevRoutes(app) {
 }
 
 module.exports = (app) => {
+  app.use('/api', (req, res, next) => {
+    if (PUBLIC_API_PATHS.includes(req.path)) return next();
+    return authRequired(req, res, next);
+  });
   loadApiRoutes(app);
   loadDevRoutes(app);
 };

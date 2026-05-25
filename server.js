@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const pool = require('./db/pool');
 const { dbErrorMessage } = require('./db/error');
+const { runBootstrap } = require('./db/bootstrap');
 const registerRoutes = require('./routes');
 
 const app = express();
@@ -27,6 +28,7 @@ async function checkDatabaseOnStart() {
   try {
     await pool.query('SELECT 1');
     console.log(`[db] 已连接 ${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_NAME}`);
+    await runBootstrap();
   } catch (err) {
     console.error('[db] 连接失败:', dbErrorMessage(err));
   }
