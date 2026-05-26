@@ -8,7 +8,7 @@ const { dbErrorMessage } = require('../../db/error');
 const { success, fail, parseId } = require('../utils/response');
 const { adminRequired } = require('../../middleware/auth');
 const { getUserMenuIds, setUserMenus } = require('../utils/menuAccess');
-const { getUserById, countUserData, clearUserData, transferUserData } = require('../utils/userData');
+const { getUserById, countUserData, clearUserData, transferUserData, copyUserData } = require('../utils/userData');
 
 const router = express.Router();
 
@@ -23,6 +23,40 @@ router.get('/', async (_req, res) => {
     res.json(success(rows));
   } catch (err) {
     console.error(err);
+    res.status(500).json(fail(dbErrorMessage(err), 500));
+  }
+});
+
+router.post('/data/copy', async (req, res) => {
+  const fromId = parseId(req.body.from_user_id);
+  const toId = parseId(req.body.to_user_id);
+  const modules = req.body.modules;
+
+  if (!fromId || !toId) return res.status(400).json(fail('请指定来源与目标用户'));
+  if (fromId === toId) return res.status(400).json(fail('来源与目标不能相同'));
+  if (!Array.isArray(modules) || !modules.length) {
+    return res.status(400).json(fail('请至少选择：knowledge、note、software 之一'));
+  }
+
+  try {
+    const fromUser = await getUserById(fromId);
+    const toUser = await getUserById(toId);
+    if (!fromUser || !toUser) return res.status(404).json(fail('用户不存在', 404));
+
+    const result = await copyUserData(fromId, toId, modules);
+    res.json(
+      success(
+        {
+          from: fromUser,
+          to: toUser,
+          ...result,
+        },
+        '复制完成'
+      )
+    );
+  } catch (err) {
+    console.error(err);
+    if (err.status === 400) return res.status(400).json(fail(err.message));
     res.status(500).json(fail(dbErrorMessage(err), 500));
   }
 });

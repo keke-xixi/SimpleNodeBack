@@ -139,6 +139,36 @@ router.get('/', async (req, res) => {
   }
 });
 
+router.post('/reorder', async (req, res) => {
+  const orders = req.body?.orders;
+  if (!Array.isArray(orders) || !orders.length) {
+    return res.status(400).json(fail('请提供 orders 数组'));
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    for (const item of orders) {
+      const id = parseId(item.id);
+      const sortOrder = Number(item.sort_order);
+      if (!id || Number.isNaN(sortOrder)) continue;
+      await conn.query('UPDATE important_note SET sort_order = ? WHERE id = ? AND user_id = ?', [
+        sortOrder,
+        id,
+        uid(req),
+      ]);
+    }
+    await conn.commit();
+    res.json(success(null, '排序已保存'));
+  } catch (err) {
+    await conn.rollback();
+    console.error(err);
+    res.status(500).json(fail(dbErrorMessage(err), 500));
+  } finally {
+    conn.release();
+  }
+});
+
 router.get('/:id', async (req, res) => {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json(fail('无效的笔记 ID'));

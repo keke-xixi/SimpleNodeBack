@@ -84,29 +84,18 @@ router.get('/categories', async (req, res) => {
   }
 });
 
-router.get('/:id', async (req, res) => {
-  const id = parseId(req.params.id);
-  if (!id) return res.status(400).json(fail('无效的 ID'));
-
-  try {
-    const [rows] = await pool.query('SELECT * FROM software_asset WHERE id = ? AND user_id = ?', [id, uid(req)]);
-    if (!rows.length) return res.status(404).json(fail('记录不存在', 404));
-    res.json(success(rows[0]));
-  } catch (err) {
-    console.error(err);
-    res.status(500).json(fail(dbErrorMessage(err), 500));
-  }
-});
-
 router.post('/upload', (req, res) => {
   upload.single('file')(req, res, async (err) => {
     if (err) {
       const msg =
         err.code === 'LIMIT_FILE_SIZE' ? '单文件不能超过 300MB' : err.message || '上传失败';
+      console.error('[software/upload]', err);
       return res.status(400).json(fail(msg));
     }
     if (!req.file) {
-      return res.status(400).json(fail('请选择文件'));
+      return res.status(400).json(
+        fail('未收到文件，请检查 Nginx client_max_body_size 是否 ≥ 320m，或重新部署最新前端')
+      );
     }
 
     const name = (req.body.name && String(req.body.name).trim()) || req.file.originalname;
@@ -136,10 +125,27 @@ router.post('/upload', (req, res) => {
       res.status(201).json(success(rows[0], '上传成功'));
     } catch (e) {
       unlinkFile(fileUrl);
-      console.error(e);
+      console.error('[software/upload] db', e);
+      if (e.code === 'ER_NO_SUCH_TABLE') {
+        return res.status(500).json(fail('software_asset 表不存在，请重启后端执行 bootstrap', 500));
+      }
       res.status(500).json(fail(dbErrorMessage(e), 500));
     }
   });
+});
+
+router.get('/:id', async (req, res) => {
+  const id = parseId(req.params.id);
+  if (!id) return res.status(400).json(fail('无效的 ID'));
+
+  try {
+    const [rows] = await pool.query('SELECT * FROM software_asset WHERE id = ? AND user_id = ?', [id, uid(req)]);
+    if (!rows.length) return res.status(404).json(fail('记录不存在', 404));
+    res.json(success(rows[0]));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json(fail(dbErrorMessage(err), 500));
+  }
 });
 
 router.put('/:id', async (req, res) => {
