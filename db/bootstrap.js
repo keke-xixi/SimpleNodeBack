@@ -122,6 +122,7 @@ async function ensureImportantNoteTable() {
       title       VARCHAR(200) NOT NULL,
       summary     VARCHAR(500) DEFAULT NULL,
       content     MEDIUMTEXT,
+      attachments JSON DEFAULT NULL COMMENT '附件列表',
       category    VARCHAR(50) DEFAULT NULL,
       color       VARCHAR(20) DEFAULT '#4f46e5',
       is_pinned   TINYINT NOT NULL DEFAULT 0,
@@ -133,6 +134,13 @@ async function ensureImportantNoteTable() {
       KEY idx_category (category)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='重要笔记'
   `);
+
+  if (!(await columnExists('important_note', 'attachments'))) {
+    await pool.query(
+      'ALTER TABLE important_note ADD COLUMN attachments JSON DEFAULT NULL COMMENT \'附件列表\' AFTER content'
+    );
+    console.log('[bootstrap] important_note 已添加 attachments 字段');
+  }
 }
 
 async function ensureNoteMenu() {
@@ -145,18 +153,70 @@ async function ensureNoteMenu() {
   return true;
 }
 
+async function ensureReportUserId() {
+  if (!(await columnExists('report_template', 'user_id'))) {
+    await pool.query(
+      'ALTER TABLE report_template ADD COLUMN user_id INT UNSIGNED NOT NULL DEFAULT 1 AFTER id'
+    );
+    await pool.query('ALTER TABLE report_template ADD KEY idx_report_user_id (user_id)');
+    console.log('[bootstrap] report_template 已添加 user_id 字段');
+  }
+  const [rows] = await pool.query(
+    'SELECT id FROM sys_user WHERE username = ? LIMIT 1',
+    ['monster']
+  );
+  const ownerId = rows[0]?.id || 1;
+  await pool.query('UPDATE report_template SET user_id = ? WHERE user_id IS NULL OR user_id = 0', [ownerId]);
+}
+
+async function ensureSoftwareTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS software_asset (
+      id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
+      user_id       INT UNSIGNED NOT NULL,
+      name          VARCHAR(200) NOT NULL,
+      original_name VARCHAR(255) NOT NULL,
+      file_url      VARCHAR(500) NOT NULL,
+      file_size     BIGINT UNSIGNED NOT NULL DEFAULT 0,
+      mime_type     VARCHAR(100) DEFAULT NULL,
+      description   VARCHAR(500) DEFAULT NULL,
+      category      VARCHAR(50) DEFAULT NULL,
+      version       VARCHAR(50) DEFAULT NULL,
+      created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_user_updated (user_id, updated_at),
+      KEY idx_category (category)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='软件库'
+  `);
+}
+
+async function ensureSoftwareMenu() {
+  const [rows] = await pool.query("SELECT id FROM sys_menu WHERE menu_key = 'software' LIMIT 1");
+  if (rows.length) return false;
+  await pool.query(
+    `INSERT INTO sys_menu (parent_id, level, type, label, menu_key, path, sort_order, status)
+     VALUES (0, 1, 2, '软件库', 'software', '/software', 36, 1)`
+  );
+  return true;
+}
+
 async function runBootstrap() {
   await ensureUserTables();
   await ensureImportantNoteTable();
+  await ensureSoftwareTable();
+  await ensureReportUserId();
   await ensureUserIdColumns();
   const primaryAdminId = await ensurePrimaryAdmin();
   const testUserId = await ensureTestUser();
   await migrateLegacyDataToAdmin(primaryAdminId);
   await ensureUserMenuItem();
   const noteMenuAdded = await ensureNoteMenu();
+  const softwareMenuAdded = await ensureSoftwareMenu();
   await assignMenusToUser(primaryAdminId);
   await assignMenusToUser(testUserId, { excludeKeys: ['system-users'] });
   if (noteMenuAdded) console.log('[bootstrap] 已添加侧边栏菜单：重要笔记');
+  if (softwareMenuAdded) console.log('[bootstrap] 已添加侧边栏菜单：软件库');
 }
 
 module.exports = { runBootstrap };

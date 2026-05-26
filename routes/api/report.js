@@ -4,6 +4,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../../db/pool');
+const uid = (req) => req.user.id;
 const { success, fail, parseId } = require('../utils/response');
 const { dbErrorMessage } = require('../../db/error');
 const { parseTemplate, buildMockData, renderTemplate } = require('./_reportRender');
@@ -51,8 +52,9 @@ function rowToClient(row) {
 router.get('/', async (req, res) => {
   try {
     const { reportName, reportCode, reportType } = req.query;
-    let sql = 'SELECT id, report_name, report_code, report_type, status, remark, created_at, updated_at FROM report_template WHERE 1=1';
-    const params = [];
+    let sql =
+      'SELECT id, report_name, report_code, report_type, status, remark, created_at, updated_at FROM report_template WHERE user_id = ?';
+    const params = [uid(req)];
     if (reportName) {
       sql += ' AND report_name LIKE ?';
       params.push(`%${reportName}%`);
@@ -91,7 +93,7 @@ router.get('/:id', async (req, res) => {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json(fail('无效的报表ID'));
   try {
-    const [rows] = await pool.query('SELECT * FROM report_template WHERE id = ?', [id]);
+    const [rows] = await pool.query('SELECT * FROM report_template WHERE id = ? AND user_id = ?', [id, uid(req)]);
     if (!rows.length) return res.status(404).json(fail('报表不存在', 404));
     res.json(success(rowToClient(rows[0])));
   } catch (err) {
@@ -106,9 +108,10 @@ router.post('/', async (req, res) => {
   const tpl = template || DEFAULT_TEMPLATE;
   try {
     const [result] = await pool.query(
-      `INSERT INTO report_template (report_name, report_code, report_type, status, remark, template_json)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO report_template (user_id, report_name, report_code, report_type, status, remark, template_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
+        uid(req),
         reportName,
         reportCode,
         reportType || 'general',
@@ -131,7 +134,10 @@ router.put('/:id', async (req, res) => {
   if (!id) return res.status(400).json(fail('无效的报表ID'));
   const { reportName, reportCode, reportType, remark, template, status } = req.body || {};
   try {
-    const [existing] = await pool.query('SELECT id FROM report_template WHERE id = ?', [id]);
+    const [existing] = await pool.query('SELECT id FROM report_template WHERE id = ? AND user_id = ?', [
+      id,
+      uid(req),
+    ]);
     if (!existing.length) return res.status(404).json(fail('报表不存在', 404));
 
     const fields = [];
@@ -144,9 +150,12 @@ router.put('/:id', async (req, res) => {
     if (template !== undefined) { fields.push('template_json = ?'); params.push(JSON.stringify(template)); }
     if (!fields.length) return res.status(400).json(fail('没有可更新的字段'));
 
-    params.push(id);
-    await pool.query(`UPDATE report_template SET ${fields.join(', ')} WHERE id = ?`, params);
-    const [rows] = await pool.query('SELECT * FROM report_template WHERE id = ?', [id]);
+    await pool.query(`UPDATE report_template SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`, [
+      ...params,
+      id,
+      uid(req),
+    ]);
+    const [rows] = await pool.query('SELECT * FROM report_template WHERE id = ? AND user_id = ?', [id, uid(req)]);
     res.json(success(rowToClient(rows[0]), '更新成功'));
   } catch (err) {
     console.error(err);
@@ -159,7 +168,7 @@ router.delete('/:id', async (req, res) => {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json(fail('无效的报表ID'));
   try {
-    const [result] = await pool.query('DELETE FROM report_template WHERE id = ?', [id]);
+    const [result] = await pool.query('DELETE FROM report_template WHERE id = ? AND user_id = ?', [id, uid(req)]);
     if (result.affectedRows === 0) return res.status(404).json(fail('报表不存在', 404));
     res.json(success(null, '删除成功'));
   } catch (err) {
@@ -172,7 +181,10 @@ router.get('/:id/data', async (req, res) => {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json(fail('无效的报表ID'));
   try {
-    const [rows] = await pool.query('SELECT template_json FROM report_template WHERE id = ?', [id]);
+    const [rows] = await pool.query('SELECT template_json FROM report_template WHERE id = ? AND user_id = ?', [
+      id,
+      uid(req),
+    ]);
     if (!rows.length) return res.status(404).json(fail('报表不存在', 404));
     const template = parseTemplate(rows[0].template_json);
     res.json(success(buildMockData(template)));
@@ -186,7 +198,10 @@ router.post('/:id/preview', async (req, res) => {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json(fail('无效的报表ID'));
   try {
-    const [rows] = await pool.query('SELECT template_json FROM report_template WHERE id = ?', [id]);
+    const [rows] = await pool.query('SELECT template_json FROM report_template WHERE id = ? AND user_id = ?', [
+      id,
+      uid(req),
+    ]);
     if (!rows.length) return res.status(404).json(fail('报表不存在', 404));
     const template = parseTemplate(rows[0].template_json);
     const data = req.body?.data || buildMockData(template);
@@ -203,8 +218,8 @@ router.get('/:id/export/excel', async (req, res) => {
   if (!id) return res.status(400).json(fail('无效的报表ID'));
   try {
     const [rows] = await pool.query(
-      'SELECT report_name, report_code, template_json FROM report_template WHERE id = ?',
-      [id],
+      'SELECT report_name, report_code, template_json FROM report_template WHERE id = ? AND user_id = ?',
+      [id, uid(req)],
     );
     if (!rows.length) return res.status(404).json(fail('报表不存在', 404));
     const template = parseTemplate(rows[0].template_json);

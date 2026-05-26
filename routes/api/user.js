@@ -8,6 +8,7 @@ const { dbErrorMessage } = require('../../db/error');
 const { success, fail, parseId } = require('../utils/response');
 const { adminRequired } = require('../../middleware/auth');
 const { getUserMenuIds, setUserMenus } = require('../utils/menuAccess');
+const { getUserById, countUserData, clearUserData, transferUserData } = require('../utils/userData');
 
 const router = express.Router();
 
@@ -20,6 +21,69 @@ router.get('/', async (_req, res) => {
        FROM sys_user ORDER BY id ASC`
     );
     res.json(success(rows));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json(fail(dbErrorMessage(err), 500));
+  }
+});
+
+router.post('/data/transfer', async (req, res) => {
+  const fromId = parseId(req.body.from_user_id);
+  const toId = parseId(req.body.to_user_id);
+  if (!fromId || !toId) return res.status(400).json(fail('请指定来源与目标用户'));
+  if (fromId === toId) return res.status(400).json(fail('来源与目标不能相同'));
+  if (fromId === req.user.id) return res.status(400).json(fail('不能转移当前登录用户自己的数据，请先换账号操作'));
+
+  try {
+    const fromUser = await getUserById(fromId);
+    const toUser = await getUserById(toId);
+    if (!fromUser || !toUser) return res.status(404).json(fail('用户不存在', 404));
+
+    const result = await transferUserData(fromId, toId);
+    res.json(
+      success(
+        {
+          from: fromUser,
+          to: toUser,
+          ...result,
+        },
+        '数据已转移'
+      )
+    );
+  } catch (err) {
+    console.error(err);
+    res.status(500).json(fail(dbErrorMessage(err), 500));
+  }
+});
+
+router.get('/:id/data-stats', async (req, res) => {
+  const id = parseId(req.params.id);
+  if (!id) return res.status(400).json(fail('无效的用户 ID'));
+  try {
+    const user = await getUserById(id);
+    if (!user) return res.status(404).json(fail('用户不存在', 404));
+    const stats = await countUserData(id);
+    res.json(success({ user, stats }));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json(fail(dbErrorMessage(err), 500));
+  }
+});
+
+router.post('/:id/data/clear', async (req, res) => {
+  const id = parseId(req.params.id);
+  if (!id) return res.status(400).json(fail('无效的用户 ID'));
+  if (id === req.user.id) return res.status(400).json(fail('不能清空当前登录用户自己的数据'));
+
+  try {
+    const user = await getUserById(id);
+    if (!user) return res.status(404).json(fail('用户不存在', 404));
+    const before = await countUserData(id);
+    if (!before.total) return res.json(success({ user, before, after: before }, '该用户暂无业务数据'));
+
+    await clearUserData(id);
+    const after = await countUserData(id);
+    res.json(success({ user, before, after }, '数据已清空'));
   } catch (err) {
     console.error(err);
     res.status(500).json(fail(dbErrorMessage(err), 500));

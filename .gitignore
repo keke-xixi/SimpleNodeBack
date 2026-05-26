@@ -4,3 +4,7 @@ node_modules
 uploads/*
 !uploads/knowledge/
 !uploads/knowledge/.gitkeep
+!uploads/note/
+!uploads/note/.gitkeep
+!uploads/software/
+!uploads/software/.gitkeep
