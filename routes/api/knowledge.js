@@ -112,6 +112,63 @@ router.get('/board', async (req, res) => {
   }
 });
 
+/** 批量保存看板排序：分类顺序 + 知识点所属分类与顺序 */
+router.post('/board/reorder', async (req, res) => {
+  const categories = req.body?.categories;
+  const points = req.body?.points;
+  if (
+    (!Array.isArray(categories) || !categories.length) &&
+    (!Array.isArray(points) || !points.length)
+  ) {
+    return res.status(400).json(fail('请提供 categories 或 points'));
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const userId = uid(req);
+
+    if (Array.isArray(categories)) {
+      for (const item of categories) {
+        const id = parseId(item.id);
+        const sortOrder = Number(item.sort_order);
+        if (!id || Number.isNaN(sortOrder)) continue;
+        await conn.query(
+          'UPDATE knowledge_category SET sort_order = ? WHERE id = ? AND user_id = ? AND parent_id = 0',
+          [sortOrder, id, userId]
+        );
+      }
+    }
+
+    if (Array.isArray(points)) {
+      for (const item of points) {
+        const id = parseId(item.id);
+        const categoryId = parseId(item.category_id);
+        const sortOrder = Number(item.sort_order);
+        if (!id || !categoryId || Number.isNaN(sortOrder)) continue;
+        const [cats] = await conn.query(
+          'SELECT id FROM knowledge_category WHERE id = ? AND user_id = ?',
+          [categoryId, userId]
+        );
+        if (!cats.length) continue;
+        await conn.query(
+          'UPDATE knowledge_point SET category_id = ?, sort_order = ? WHERE id = ? AND user_id = ?',
+          [categoryId, sortOrder, id, userId]
+        );
+      }
+    }
+
+    await conn.commit();
+    res.json(success(null, '排序已保存'));
+  } catch (err) {
+    await conn.rollback();
+    console.error(err);
+    res.status(500).json(fail(dbErrorMessage(err), 500));
+  } finally {
+    conn.release();
+  }
+});
+
 router.post('/upload', (req, res) => {
   upload.single('file')(req, res, (err) => {
     if (err) {
