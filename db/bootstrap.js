@@ -201,10 +201,95 @@ async function ensureSoftwareMenu() {
   return true;
 }
 
+async function ensureImageStorageTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS image_storage (
+      id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
+      user_id       INT UNSIGNED NOT NULL,
+      file_url      VARCHAR(500) NOT NULL,
+      original_name VARCHAR(255) NOT NULL DEFAULT '',
+      mime_type     VARCHAR(100) DEFAULT NULL,
+      file_size     INT UNSIGNED NOT NULL DEFAULT 0,
+      caption       VARCHAR(500) DEFAULT NULL COMMENT '发送时附带的文字',
+      category      VARCHAR(50) NOT NULL DEFAULT '临时' COMMENT '分类：临时/长期等',
+      storage_day   DATE NOT NULL COMMENT '按日期归档',
+      created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_user_day (user_id, storage_day, created_at),
+      KEY idx_user_category (user_id, category, created_at),
+      KEY idx_user_created (user_id, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='图片存储'
+  `);
+
+  if (!(await columnExists('image_storage', 'category'))) {
+    await pool.query(
+      "ALTER TABLE image_storage ADD COLUMN category VARCHAR(50) NOT NULL DEFAULT '临时' COMMENT '分类' AFTER caption"
+    );
+    await pool.query(
+      'ALTER TABLE image_storage ADD KEY idx_user_category (user_id, category, created_at)'
+    );
+    console.log('[bootstrap] image_storage 已添加 category 字段');
+  }
+}
+
+async function ensureImageStorageCategoryTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS image_storage_category (
+      id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
+      user_id     INT UNSIGNED NOT NULL,
+      name        VARCHAR(50) NOT NULL,
+      sort_order  INT NOT NULL DEFAULT 0,
+      created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uk_user_name (user_id, name),
+      KEY idx_user_sort (user_id, sort_order)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='图片存储分类'
+  `);
+
+  const [users] = await pool.query('SELECT id FROM sys_user');
+  const defaults = ['临时', '长期', '工作', '参考'];
+  for (const u of users) {
+    const userId = u.id;
+    const [existing] = await pool.query(
+      'SELECT id FROM image_storage_category WHERE user_id = ? LIMIT 1',
+      [userId]
+    );
+    if (existing.length) continue;
+
+    const [distinct] = await pool.query(
+      'SELECT DISTINCT category FROM image_storage WHERE user_id = ? AND category IS NOT NULL AND TRIM(category) <> \'\'',
+      [userId]
+    );
+    const names = [...defaults];
+    distinct.forEach((row) => {
+      const n = String(row.category).trim();
+      if (n && !names.includes(n)) names.push(n);
+    });
+    for (let i = 0; i < names.length; i += 1) {
+      await pool.query(
+        'INSERT IGNORE INTO image_storage_category (user_id, name, sort_order) VALUES (?, ?, ?)',
+        [userId, names[i], i]
+      );
+    }
+  }
+}
+
+async function ensureImageStorageMenu() {
+  const [rows] = await pool.query("SELECT id FROM sys_menu WHERE menu_key = 'image-storage' LIMIT 1");
+  if (rows.length) return false;
+  await pool.query(
+    `INSERT INTO sys_menu (parent_id, level, type, label, menu_key, path, sort_order, status)
+     VALUES (0, 1, 2, '图片存储', 'image-storage', '/image-storage', 37, 1)`
+  );
+  return true;
+}
+
 async function runBootstrap() {
   await ensureUserTables();
   await ensureImportantNoteTable();
   await ensureSoftwareTable();
+  await ensureImageStorageTable();
+  await ensureImageStorageCategoryTable();
   await ensureReportUserId();
   await ensureUserIdColumns();
   const primaryAdminId = await ensurePrimaryAdmin();
@@ -213,10 +298,12 @@ async function runBootstrap() {
   await ensureUserMenuItem();
   const noteMenuAdded = await ensureNoteMenu();
   const softwareMenuAdded = await ensureSoftwareMenu();
+  const imageStorageMenuAdded = await ensureImageStorageMenu();
   await assignMenusToUser(primaryAdminId);
   await assignMenusToUser(testUserId, { excludeKeys: ['system-users'] });
   if (noteMenuAdded) console.log('[bootstrap] 已添加侧边栏菜单：重要笔记');
   if (softwareMenuAdded) console.log('[bootstrap] 已添加侧边栏菜单：软件库');
+  if (imageStorageMenuAdded) console.log('[bootstrap] 已添加侧边栏菜单：图片存储');
 }
 
 module.exports = { runBootstrap };
